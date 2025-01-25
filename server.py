@@ -19,10 +19,12 @@ import cloudinary.uploader
 import cloudinary.api
 import json
 from bson import ObjectId
+import time
+import traceback
 
 config = cloudinary.config(secure=True)
 
-app = FastAPI()
+app = FastAPI(debug=True)
 
 # Add CORS middleware
 app.add_middleware(
@@ -72,7 +74,7 @@ def read_root():
     return {"message": "Welcome to FastAPI!"}
 
 # Endpoint for registering new users
-@app.post("/api/v1/user-register")
+@app.post("/api/v1/user/user-register")
 async def register_user(user: UserModel):
     try:
         print("user->",user)     
@@ -103,7 +105,7 @@ async def register_user(user: UserModel):
         return JSONResponse(status_code=400, content={"status": "error"})
 
 # Endpoint for lpgin users
-@app.post("/api/v1/user-login")
+@app.post("/api/v1/user/user-login")
 async def login_user(user: UserLoginModel):
     try:
         print("user->",user)     
@@ -131,7 +133,7 @@ async def login_user(user: UserLoginModel):
         return JSONResponse(status_code=400, content={"status": "error"})
 
 
-@app.post("/api/v1/user-logout", dependencies=[Depends(token_validation_dependency)])
+@app.post("/api/v1/user/user-logout", dependencies=[Depends(token_validation_dependency)])
 async def user_logout(request: Request):
     try:
         data = await request.json()
@@ -153,7 +155,7 @@ async def user_logout(request: Request):
         return JSONResponse(status_code=400, content={"status": "errro", "message": "Error occured!"})
 
 
-@app.get("/api/v1/admin-register")
+@app.get("/api/v1/admin/admin-register")
 async def register_admin(
     admin_name: str = Query(..., description="Admin's name"),
     admin_email: str = Query(..., description="Admin's email"),
@@ -188,10 +190,10 @@ async def register_admin(
 
 
 # Endpoint for admin login
-@app.post("/api/v1/admin-login")
+@app.post("/api/v1/admin/admin-login")
 async def admin_login(user: AdminLoginModel):
     try:
-        print("user->",user)     
+        print("user->",user)   
         admin_collection = get_collection("admin")   
         email = user.admin_email
         is_user_already_present = await admin_collection.find_one({"admin_email":email})
@@ -216,7 +218,7 @@ async def admin_login(user: AdminLoginModel):
         return JSONResponse(status_code=400, content={"status": "error"})
 
 
-@app.post("/api/v1/admin-logout", dependencies=[Depends(token_validation_dependency_for_admin)])
+@app.post("/api/v1/admin/admin-logout", dependencies=[Depends(token_validation_dependency_for_admin)])
 async def admin_logout(request: Request):
     try:
         data = await request.json()
@@ -243,8 +245,21 @@ async def admin_logout(request: Request):
 async def add_new_test(request: Request):
     try:
         data = await request.json()
-        print("data->",data["test_name"])
-        print("data->",data["questions"])
+        print("data->",data["test_slug"].split(" "))
+        slug_name_of_test = data["test_slug"].split(" ")
+        updated_slug_name = ""
+        if(len(slug_name_of_test) > 1):
+            updated_slug_name = "-".join(slug_name_of_test)
+        else:
+            updated_slug_name = data["test_slug"]
+
+        personality_test_collection = get_collection("personality_test")
+        all_personality_tests = await personality_test_collection.find({}).to_list(length=None)
+        if(len(all_personality_tests) > 0):
+            for test in all_personality_tests:
+                if(test["test_slug"] == updated_slug_name):
+                    return JSONResponse(status_code=400, content={"status": "errro", "message": "Slug name already exist!"})
+
 
         # Upload the image to Cloudinary
         upload_response = cloudinary.uploader.upload(data["image"], unique_filename=True, overwrite=True)
@@ -253,11 +268,15 @@ async def add_new_test(request: Request):
         srcURL = upload_response.get("secure_url")
         print(srcURL)
 
-        personality_test_collection = get_collection("personality_test")
+        
         user_data = {
             "test_name": data["test_name"],
+            "test_slug": updated_slug_name,
             "image": srcURL,
-            "questions": data["questions"]
+            "questions": data["questions"],
+            "added_at": time.time(),
+            "updated_at": None,
+            "deleted_at": None
         }
 
         await personality_test_collection.insert_one(user_data)
@@ -291,10 +310,22 @@ async def fetch_all_tests(request: Request):
 
 
 @app.post("/api/v1/admin/edit-test", dependencies=[Depends(token_validation_dependency_for_admin)])
-async def add_new_test(request: Request):
+async def edit_test(request: Request):
     try:
         data = await request.json()
+        slug_name_of_test = data["test_slug"].split(" ")
+        updated_slug_name = ""
+        if(len(slug_name_of_test) > 1):
+            updated_slug_name = "-".join(slug_name_of_test)
+        else:
+            updated_slug_name = data["test_slug"]
+
         personality_test_collection = get_collection("personality_test")
+        all_personality_tests = await personality_test_collection.find({}).to_list(length=None)
+        if(len(all_personality_tests) > 0):
+            for test in all_personality_tests:
+                if(test["test_slug"] == updated_slug_name and test["_id"]!=ObjectId(data["id"])):
+                    return JSONResponse(status_code=400, content={"status": "errro", "message": "Slug name already exist!"})
 
         # Find the test to be edited
         test_to_edit = await personality_test_collection.find_one({"_id": ObjectId(data["id"])})
@@ -311,8 +342,10 @@ async def add_new_test(request: Request):
         # Prepare updated data
         updated_data = {
             "test_name": data.get("test_name", test_to_edit["test_name"]),
+            "test_slug": data.get("test_slug", test_to_edit["test_slug"]),
             "image": srcURL,
             "questions": data.get("questions", test_to_edit["questions"]),
+            "updated_at": time.time()
         }
 
         # Update the document
@@ -339,7 +372,8 @@ async def add_new_test(request: Request):
         )
 
     except Exception as e:
-        print(e)
+        print("Error",e)
+        traceback.print_exc()
         return JSONResponse(status_code=400, content={"status": "error", "message": "An error occurred!"})
 
 
@@ -377,5 +411,103 @@ async def delete_test(request: Request):
     except Exception as e:
         print(e)
         return JSONResponse(status_code=400, content={"status": "error", "message": "An error occurred!"})
+
+
+# Endpoint for fetching all personality tests
+@app.get("/api/v1/user/fetch-all-tests", dependencies=[Depends(token_validation_dependency)])
+async def fetch_all_tests(request: Request):
+    try:
+        personality_test_collection = get_collection("personality_test")
+
+        # Fetch all personality tests as a list
+        all_personality_tests = await personality_test_collection.find({}).to_list(length=None)
+        for test in all_personality_tests:
+            test["_id"] = str(test["_id"])  # Convert ObjectId to string
+
+        return JSONResponse(status_code=200, content={"status": "success", "message": "Personality tests fetched successfully!!", "all_personality_tests": all_personality_tests})
+
+    except Exception as e:
+        print(e)
+        return JSONResponse(status_code=400, content={"status": "errro", "message": "Error occured!"})
+
+# Endpoint for fetching test info from slug
+@app.post("/api/v1/user/fetch-test-info-from-slug", dependencies=[Depends(token_validation_dependency)])
+async def fetch_test_info_from_slug(request: Request):
+    try:
+        data = await request.json()
+        personality_test_collection = get_collection("personality_test")
+
+        # Fetch all personality tests as a list
+        personality_test = await personality_test_collection.find_one({"test_slug": data["test_slug"]})
+        personality_test["_id"] = str(personality_test["_id"])  # Convert ObjectId to string
+
+        return JSONResponse(status_code=200, content={"status": "success", "message": "Personality test fetched successfully!!", "personality_test": personality_test})
+
+    except Exception as e:
+        print(e)
+        return JSONResponse(status_code=400, content={"status": "errro", "message": "Error occured!"})
+
+
+
+# Calculate the MBTI Type->
+@app.post("/api/v1/user/calculate-mbti", dependencies=[Depends(token_validation_dependency)])
+async def calculate_mbti(request: Request):
+    try:
+        """
+        Calculate MBTI type based on user responses.
+        Each response is scored from -2 to +2.
+        """
+        data = await request.json()
+        # Mapping questions to MBTI dimensions
+        dimension_map = {
+            "E/I": [1, 2, 3],  # Questions related to E/I
+            "S/N": [4, 5, 6],
+            "T/F": [7, 8, 9],
+            "J/P": [10, 11, 12],
+        }
+        
+        reverse_questions = {2, 5, 8, 11}  # Questions with reverse scoring
+
+        # Initialize dimension scores
+        scores = {"E": 0, "I": 0, "S": 0, "N": 0, "T": 0, "F": 0, "J": 0, "P": 0}
+
+        # Scoring
+        for qid, response in data["finalAnswers"].items():
+            # Get the score from the response
+            score = 0
+            if response == "Strongly Agree":
+                score = 2
+            elif response == "Agree":
+                score = 1
+            elif response == "Neutral":
+                score = 0
+            elif response == "Disagree":
+                score = -1
+            elif response == "Strongly Disagree":
+                score = -2
+            
+            # Reverse scoring for specific questions
+            if qid in reverse_questions:
+                score = -score
+
+            # Add score to the appropriate dimension
+            for dimension, questions in dimension_map.items():
+                if qid in questions:
+                    trait_1, trait_2 = dimension.split("/")  # E/I, S/N, etc.
+                    scores[trait_1] += score
+                    scores[trait_2] -= score
+        
+        # Determine final MBTI type
+        mbti = ""
+        mbti += "E" if scores["E"] >= scores["I"] else "I"
+        mbti += "S" if scores["S"] >= scores["N"] else "N"
+        mbti += "T" if scores["T"] >= scores["F"] else "F"
+        mbti += "J" if scores["J"] >= scores["P"] else "P"
+
+        return JSONResponse(status_code=200, content={"status": "success", "message": "Personality calculated successfully!!", "result": mbti})
+    except Exception as e:
+        print(e)
+        return JSONResponse(status_code=400, content={"status": "errro", "message": "Error occured!"})
+
 # if __name__ == "__main__":
 #     asyncio.run(db_init()) 
